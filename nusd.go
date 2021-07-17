@@ -62,9 +62,11 @@ func NUSD(titleID string, outPath string, WAD bool) error {
 	}
 
 	// Ticket does not exist. We will not pack the contents
-	if statusCode != 200 && titleID != "0001000148434d50"{
+	if statusCode != 200 {
 		ticket = false
-		fmt.Println("Ticket either failed to download or doesn't exist. A WAD will not be created.")
+		if titleID != "0001000148434d50" {
+			fmt.Println("Ticket either failed to download or doesn't exist. A WAD will not be created.")
+		}
 	}
 
 	if ticket == true {
