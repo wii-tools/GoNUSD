@@ -14,7 +14,7 @@ const (
 func main() {
 	// TODO: interpret command line
 
-	if _, err := GoNUSD.Download(titleID, version, false, true); err != nil { // Mii Channel (Wii)
+	if _, err := GoNUSD.Download(titleID, version, false, true); err != nil { // System Menu 4.3E (Wii)
 		fmt.Printf("Failed to download title %016x (%d): \"%s\".\n", titleID, version, err.Error())
 		return
 	}
