@@ -1,152 +1,163 @@
 package GoNUSD
 
 import (
+	"bytes"
+	"crypto/aes"
+	"crypto/cipher"
+	"crypto/sha1"
+	"encoding/binary"
 	"fmt"
+	"net/http"
+
 	"github.com/wii-tools/wadlib"
-	"io/ioutil"
-	"os"
 )
 
-var nusdUrl = "http://nus.cdn.shop.wii.com/ccs/download"
+const nusdUrl = "http://ccs.cdn.wup.shop.nintendo.net/ccs/download"
 
+func getContentIV(index uint16) []byte {
+	iv := [16]byte{0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}
+	iv[0] = uint8(index >> 8)
+	iv[1] = uint8(index & 0xff)
+	return iv[:]
+}
 
-func NUSD(titleID string, outPath string, WAD bool) error {
-	// Check if titleID is 16 characters
-	if len(titleID) != 16 {
-		fmt.Println("All title ID's must be 16 characters long.")
-		return nil
-	}
-	
-	// The ticket variable is here so that if a ticket could not be downloaded, we know not to pack the contents.
-	var ticket = true
-	err := os.Mkdir(outPath, 0777)
-	if err != nil {
-		if os.IsExist(err) {
-			// The requested directory already exists. We do not want to take any chances with packing the wrong content.
-			// As such, we will tell the user to delete the folder then try again.
-			fmt.Println("The requested directory already exists. Please choose another directory or delete the directory you wish to download to.")
-		}
-		return err
-	}
+func downloadContents(tmd wadlib.BinaryTMD, records []wadlib.ContentRecord, calculateSHA1 bool, ticket *wadlib.Ticket) ([][]byte, error) {
+	buffer := make([][]byte, tmd.NumberOfContents)
 
-	// We will download the TMD first in order to get the contents we need to download
-	file := fmt.Sprintf("%s/%s/tmd", nusdUrl, titleID)
-	statusCode, err := DownloadFile(fmt.Sprintf("%s/tmd", outPath), file)
-	if err != nil {
-		return err
-	}
-
-	// Title does not exist
-	if statusCode == 404 {
-		fmt.Println("Requested title does not exist on NUS.")
-		return nil
-	}
-
-	// Parse the TMD file
-	contents, err := ioutil.ReadFile(fmt.Sprintf("%s/tmd", outPath))
-	if err != nil {
-		return err
-	}
-
-	wad := wadlib.WAD{}
-	err = wad.LoadTMD(contents)
-	if err != nil {
-		return err
-	}
-
-	// Download ticket, if it exists
-	file = fmt.Sprintf("%s/%s/cetk", nusdUrl, titleID)
-	statusCode, err = DownloadFile(fmt.Sprintf("%s/cetk", outPath), file)
-	if err != nil {
-		return nil
-	}
-
-	// Ticket does not exist. We will not pack the contents
-	if statusCode != 200 {
-		ticket = false
-		if titleID != "0001000148434d50" {
-			fmt.Println("Ticket either failed to download or doesn't exist. A WAD will not be created.")
+	if ticket != nil {
+		if err := ticket.DecryptKey(); err != nil {
+			return nil, ErrTicketDecryptionFailure(err)
 		}
 	}
 
-	if ticket == true {
-		// Parse ticket
-		contents, err = ioutil.ReadFile(fmt.Sprintf("%s/cetk", outPath))
+	var i uint16 = 0
+	for ; i < tmd.NumberOfContents; i++ {
+		contentURL := fmt.Sprintf("%s/%016x/%08x", nusdUrl, tmd.TitleID, records[i].ID)
+		contentResponse, err := http.Get(contentURL)
+
 		if err != nil {
-			return err
+			return nil, ErrHTTPFailure(contentURL, err)
 		}
 
-		err = wad.LoadTicket(contents)
-		if err != nil {
-			return err
+		if contentResponse.StatusCode != http.StatusOK {
+			return nil, ErrContentNotFound(tmd.NumberOfContents, records[i].ID)
 		}
 
-	}
-
-	// Download and decrypt WAD contents
-	for _, content := range wad.TMD.Contents {
-		file = fmt.Sprintf("%s/%s/%08x", nusdUrl, titleID, content.ID)
-		filepath := fmt.Sprintf("%s/%08x", outPath, content.ID)
-		// Create IV based on the content's Index
-		iv := []byte{0x00, byte(content.Index), 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}
-
-		// Download content from NUSD
-		_, err := DownloadFile(filepath, file)
-		if err != nil {
-			return err
+		buffer[i] = make([]byte, contentResponse.ContentLength)
+		if err = binary.Read(contentResponse.Body, binary.BigEndian, buffer[i]); err != nil {
+			return nil, ErrBufferReadFailure(fmt.Sprintf("Content %08x", records[i].ID), err)
 		}
 
-		data, errr := ioutil.ReadFile(filepath)
-		if errr != nil {
-			return errr
-		}
-
-		// Decrypt content
-		newFilepath := fmt.Sprintf("%s/%08x.app", outPath, content.Index)
-		decryptAESCBC(wad.Ticket.TitleKey[:], iv, data, newFilepath)
-
-		// Delete the encrypted contents
-		err = os.Remove(filepath)
-		if err != nil {
-			return err
-		}
-	}
-
-	// If a ticket was not downloaded, this would be where we finish.
-	if ticket == true {
-		// Rename ticket and tmd
-		newCetk := fmt.Sprintf("%s/%s.tik", outPath, titleID)
-		oldCetk := fmt.Sprintf("%s/cetk", outPath)
-		err := os.Rename(oldCetk, newCetk)
-		if err != nil {
-			return err
-		}
-
-		newTMD := fmt.Sprintf("%s/%s.tmd", outPath, titleID)
-		oldTMD := fmt.Sprintf("%s/tmd", outPath)
-		err = os.Rename(oldTMD, newTMD)
-		if err != nil {
-			return err
-		}
-
-		// Download certificate
-		_, err = DownloadFile(fmt.Sprintf("%s/%s.certs", outPath, titleID), "https://sketchmaster2001.github.io/cert")
-		if err != nil {
-			return err
-		}
-
-		// Make footer file
-		os.Create(fmt.Sprintf("%s/%s.footer", outPath, titleID))
-
-		if WAD == true {
-			// Finally, pack the WAD
-			wadDir := fmt.Sprintf("%s/%s.wad", outPath, titleID)
-			err = Pack(outPath, wadDir)
+		if ticket != nil {
+			block, err := aes.NewCipher(ticket.TitleKey[:])
 			if err != nil {
-				return err
+				return nil, ErrCommonKeyCipher
 			}
+
+			blockMode := cipher.NewCBCDecrypter(block, getContentIV(records[i].Index))
+
+			decryptedData := make([]byte, len(buffer[i]))
+			blockMode.CryptBlocks(decryptedData, buffer[i])
+
+			if calculateSHA1 {
+				sha1sum := sha1.Sum(decryptedData)
+				if !bytes.Equal(records[i].Hash[:], sha1sum[:]) { // TODO: sometimes they're not equal, figure out why
+					return nil, ErrInvalidHash(records[i].ID)
+				}
+			}
+
+			copy(buffer[i], decryptedData)
 		}
 	}
 
-	return nil
+	return buffer, nil
+}
+
+// Download downloads the specified title. Requires both the high and low title ID to be concatenated.
+// Returns: TMD, Ticket (if available) plus all the contents (all raw, big endian).
+// TODO: allow downloading content for other systems (Wii U, DSi + 3DS)
+func Download(titleID uint64, version uint16, calculateSHA1, decodeAutomatically bool) ([][]byte, error) {
+	tmdURL := fmt.Sprintf("%s/%016x/tmd", nusdUrl, titleID)
+	if version != 0 {
+		tmdURL += fmt.Sprintf(".%d", version)
+	}
+
+	tmdResponse, err := http.Get(tmdURL)
+	if err != nil {
+		return nil, ErrHTTPFailure(tmdURL, err)
+	}
+
+	if tmdResponse.StatusCode != http.StatusOK {
+		return nil, ErrTitleNotFound
+	}
+
+	rawTMD := make([]byte, tmdResponse.ContentLength)
+	if err = binary.Read(tmdResponse.Body, binary.BigEndian, rawTMD); err != nil {
+		return nil, ErrBufferReadFailure("TMD", err)
+	}
+
+	tmdBuffer := bytes.NewBuffer(rawTMD)
+	var tmd wadlib.BinaryTMD
+	if err = binary.Read(tmdBuffer, binary.BigEndian, &tmd); err != nil {
+		return nil, ErrBufferReadFailure("TMD header", err)
+	}
+
+	records := make([]wadlib.ContentRecord, tmd.NumberOfContents)
+	if err = binary.Read(tmdBuffer, binary.BigEndian, &records); err != nil {
+		return nil, ErrBufferReadFailure("TMD content", err)
+	}
+
+	if tmd.SignatureType != wadlib.SignatureRSA2048 {
+		return nil, ErrTMDInvalidSignatureTypeFailure
+	}
+
+	if !decodeAutomatically {
+		data, err := downloadContents(tmd, records, calculateSHA1, nil)
+		if err != nil {
+			return nil, err
+		}
+
+		buffer := make([][]byte, 2)
+
+		copy(buffer[0], rawTMD)
+		buffer = append(buffer, data...)
+
+		return buffer, nil
+	}
+
+	ticketURL := fmt.Sprintf("%s/%016x/cetk", nusdUrl, titleID)
+	ticketResponse, err := http.Get(ticketURL)
+	if err != nil {
+		return nil, ErrHTTPFailure(ticketURL, err)
+	}
+
+	if ticketResponse.StatusCode != http.StatusOK {
+		return nil, ErrTicketNotFound
+	}
+
+	rawTicket := make([]byte, ticketResponse.ContentLength)
+	if err = binary.Read(ticketResponse.Body, binary.BigEndian, rawTicket); err != nil {
+		return nil, ErrBufferReadFailure("Ticket", err)
+	}
+
+	var (
+		ticketBuffer = bytes.NewBuffer(rawTicket)
+		ticket       wadlib.Ticket
+	)
+	if err = binary.Read(ticketBuffer, binary.BigEndian, &ticket); err != nil {
+		return nil, ErrBufferReadFailure("Ticket contents", err)
+	}
+
+	data, err := downloadContents(tmd, records, calculateSHA1, &ticket)
+	if err != nil {
+		return nil, err
+	}
+
+	buffer := make([][]byte, 2)
+
+	buffer[0] = rawTMD
+	buffer[1] = rawTicket
+	buffer = append(buffer, data...)
+
+	return buffer, nil
 }
