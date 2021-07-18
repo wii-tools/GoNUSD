@@ -1,0 +1,7 @@
+nusd/nusd
+
+.idea
+.vscode
+
+__debug_bin
+*.exe
