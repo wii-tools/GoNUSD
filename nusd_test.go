@@ -1,11 +1,7 @@
 package GoNUSD
 
 import (
-	"bytes"
-	"encoding/binary"
 	"testing"
-
-	"github.com/wii-tools/wadlib"
 )
 
 const (
@@ -15,16 +11,12 @@ const (
 
 // TODO: hash checks
 func TestDownload(t *testing.T) {
-	data, err := Download(0x0000000100000002, 514, false, true)
+	wad, err := Download(0x0000000100000002, 514, false)
 	if err != nil { // System Menu 4.3E (Wii)
 		t.Fatalf("Failed downloading: \"%s\".", err.Error())
 	}
 
-	var tmd wadlib.BinaryTMD
-	if err = binary.Read(bytes.NewBuffer(data[0]), binary.BigEndian, &tmd); err != nil {
-		t.Fatalf("Failed decoding the TMD: \"%s\".", err.Error())
-	}
-
+	tmd := wad.TMD
 	if tmd.TitleID != titleID {
 		t.Fatalf("Title ID: %016x != %016x", tmd.TitleID, titleID)
 	}
