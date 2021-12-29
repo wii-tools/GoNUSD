@@ -44,8 +44,8 @@ func Download(titleID uint64, version uint16, downloadTicket bool) (*wadlib.WAD,
 		}
 
 		file := wadlib.WADFile{
-			ContentRecord: currentRecord,
-			RawData:       contentData,
+			Record:  &currentRecord,
+			RawData: contentData,
 		}
 		wad.Data[currentRecord.Index] = file
 	}
