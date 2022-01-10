@@ -63,6 +63,8 @@ func Download(titleID uint64, version uint16, downloadTicket bool) (*wadlib.WAD,
 		return nil, err
 	}
 
+	wad.CertificateChain = wadlib.CertChainTemplate
+
 	return &wad, nil
 }
 
